@@ -356,3 +356,200 @@ class LKPAN(nn.Layer):
 
         fuse = paddle.concat([p5, p4, p3, p2], axis=1)
         return fuse
+    
+    
+ '''
+change from mmocr
+https://github.com/open-mmlab/mmocr/blob/b1ab4c7c33424e241d96cefa9c6c225cfa3bcd58/mmocr/models/textdet/necks/fpn_cat.py 
+
+'''
+
+class DBASFFPN(nn.Layer):
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super(DBASFFPN, self).__init__()
+        self.out_channels = out_channels  # 256
+        weight_attr = paddle.nn.initializer.KaimingUniform()
+        # print('input ',in_channels)
+        self.num_ins = len(in_channels)  # 4
+        self.num_outs = self.num_ins     # 4
+
+        self.in2_conv = nn.Conv2D(
+            in_channels=in_channels[0],   #  16 24 56 480
+            out_channels=self.out_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.in3_conv = nn.Conv2D(
+            in_channels=in_channels[1],
+            out_channels=self.out_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.in4_conv = nn.Conv2D(
+            in_channels=in_channels[2],
+            out_channels=self.out_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.in5_conv = nn.Conv2D(
+            in_channels=in_channels[3],
+            out_channels=self.out_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.p5_conv = nn.Conv2D(
+            in_channels=self.out_channels,
+            out_channels=self.out_channels // 4,
+            kernel_size=3,
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.p4_conv = nn.Conv2D(
+            in_channels=self.out_channels,
+            out_channels=self.out_channels // 4,
+            kernel_size=3,
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.p3_conv = nn.Conv2D(
+            in_channels=self.out_channels,
+            out_channels=self.out_channels // 4,
+            kernel_size=3,
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.p2_conv = nn.Conv2D(
+            in_channels=self.out_channels,
+            out_channels=self.out_channels // 4,
+            kernel_size=3,
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.asf_conv =nn.Conv2D(
+            in_channels=out_channels * self.num_outs,  # 256*4
+            out_channels=out_channels * self.num_outs, # 256*4
+            kernel_size=3,
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)
+        self.asf_attn = ScaleChannelSpatialAttention(
+            self.out_channels * self.num_outs,
+            (self.out_channels * self.num_outs) // 4, self.num_outs)
+    def forward(self, x):
+        c2, c3, c4, c5 = x   #  [1, 16, 160, 160] [1, 24, 80, 80] [1, 56, 40, 40] [1, 480, 20, 20]
+
+        in5 = self.in5_conv(c5)  # [1, 256, 20, 20]
+        in4 = self.in4_conv(c4)   # [1, 256, 40, 40]
+        in3 = self.in3_conv(c3)   # [1, 256, 80, 80]
+        in2 = self.in2_conv(c2)   # [1, 256, 160, 160]
+
+        out4 = in4 + F.upsample(
+            in5, scale_factor=2, mode="nearest", align_mode=1)  # 1/16   [1, 256, 40, 40]
+        out3 = in3 + F.upsample(
+            out4, scale_factor=2, mode="nearest", align_mode=1)  # 1/8   [1, 256, 80, 80]
+        out2 = in2 + F.upsample(
+            out3, scale_factor=2, mode="nearest", align_mode=1)  # 1/4   [1, 256, 160, 160]
+
+        p5 = self.p5_conv(in5)    # [1, 64, 20, 20]
+        p4 = self.p4_conv(out4)   # [1, 64, 40, 40]
+        p3 = self.p3_conv(out3)   # [1, 64, 80, 80]
+        p2 = self.p2_conv(out2)   # [1, 64, 160, 160]
+        p5 = F.upsample(p5, scale_factor=8, mode="nearest", align_mode=1)   # [1, 64, 160, 160]
+        p4 = F.upsample(p4, scale_factor=4, mode="nearest", align_mode=1)   # [1, 64, 160, 160]
+        p3 = F.upsample(p3, scale_factor=2, mode="nearest", align_mode=1)   # [1, 64, 160, 160]
+
+        fuse = paddle.concat([p5, p4, p3, p2], axis=0)  #  [1, 256, 160, 160]  [4, 64, 160, 160]
+        asf_feature = self.asf_conv(fuse)   # [1, 256, 160, 160]  [4, 4, 160, 160]
+        attention = self.asf_attn(asf_feature)
+        enhanced_feature = []               # [1, 256, 160, 160]
+        for i, out in enumerate(fuse):
+            enhanced_feature.append(attention[:, i:i + 1] * fuse[i])
+        out = paddle.concat(enhanced_feature, dim=1)
+
+        return out
+
+class ScaleChannelSpatialAttention(nn.Layer):
+    def __init__(self, in_channels, c_wise_channels, out_channels, **kwargs):
+        super(ScaleChannelSpatialAttention, self).__init__()
+
+        self.in_channels = in_channels          # 256*4  1024
+        self.out_channels = out_channels        # 4
+
+        self.avg_pool = nn.AdaptiveAvgPool2D(1)
+        weight_attr = paddle.nn.initializer.KaimingUniform()
+        # Channel Wise
+        self.channel_wise_1 = nn.Conv2D(
+            in_channels=in_channels,
+            out_channels=c_wise_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)    # 'ReLU'
+        self.channel_wise_2 = nn.Conv2D(
+            in_channels=c_wise_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)   # 'Sigmoid'
+        # Spatial Wise
+        self.spatial_wise_1 = nn.Conv2D(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=3, 
+            padding=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)   # 'ReLU'
+        self.spatial_wise_2 = nn.Conv2D(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=1, 
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)   # 'Sigmoid'
+        # Attention Wise
+        self.attention_wise = nn.Conv2D(
+            in_channels=self.in_channels,        #256
+            out_channels=self.out_channels,       #4
+            kernel_size=1,
+            weight_attr=ParamAttr(initializer=weight_attr),
+            bias_attr=False)   # 'Sigmoid'
+        self.ReLU= paddle.nn.ReLU()
+        self.Sigmoid= paddle.nn.Sigmoid()
+
+    def forward(self,inputs):
+        # https://www.paddlepaddle.org.cn/documentation/docs/zh/api/paddle/mean_cn.html#mean
+        # inputs  [1, 256, 160, 160]
+        x = self.avg_pool(inputs)    # [1, 256, 1, 1]  [4, 4, 1, 1]
+        x = self.channel_wise_1(x)   # [1, 64, 1, 1]
+        x = self.ReLU(x)
+        x = self.channel_wise_2(x)    # [1, 256, 1, 1]
+        x = self.Sigmoid(x)
+        x = inputs + x              # [1, 256, 160, 160]
+
+        # ave = paddle.mean(x, axis=1, keepdim=True)  # [1, 1, 160, 160]
+        # x = self.spatial_wise_1(ave)   # [1, 1, 160, 160]
+        inputs = paddle.mean(x, axis=1, keepdim=True)  # [1, 1, 160, 160]
+        x = self.spatial_wise_1(inputs)   # [1, 1, 160, 160]       
+        x = self.ReLU(x)
+        x = self.spatial_wise_2(x)        # [1, 1, 160, 160]
+        x = self.Sigmoid(x)
+        x = inputs + x                    # [1, 1, 160, 160]   [1, 256, 160, 160]
+
+        out = self.attention_wise(x)       #  256 4  [1, 4, 160, 160]
+        out = self.Sigmoid(out)            # [1, 256, 160, 160]   [1, 4, 160, 160]
+ 
+        return out  
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
