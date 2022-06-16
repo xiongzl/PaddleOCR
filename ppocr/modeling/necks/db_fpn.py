@@ -369,7 +369,6 @@ class DBASFFPN(nn.Layer):
         super(DBASFFPN, self).__init__()
         self.out_channels = out_channels  # 256
         weight_attr = paddle.nn.initializer.KaimingUniform()
-        # print('input ',in_channels)
         self.num_ins = len(in_channels)  # 4
         self.num_outs = self.num_ins     # 4
 
@@ -515,7 +514,6 @@ class ScaleChannelSpatialAttention(nn.Layer):
         self.Sigmoid= paddle.nn.Sigmoid()
 
     def forward(self,inputs):
-        # https://www.paddlepaddle.org.cn/documentation/docs/zh/api/paddle/mean_cn.html#mean
         # inputs  [1, 256, 160, 160]
         x = self.avg_pool(inputs)    # [1, 256, 1, 1]  [4, 4, 1, 1]
         x = self.channel_wise_1(x)   # [1, 64, 1, 1]
@@ -524,8 +522,6 @@ class ScaleChannelSpatialAttention(nn.Layer):
         x = self.Sigmoid(x)
         x = inputs + x              # [1, 256, 160, 160]
 
-        # ave = paddle.mean(x, axis=1, keepdim=True)  # [1, 1, 160, 160]
-        # x = self.spatial_wise_1(ave)   # [1, 1, 160, 160]
         inputs = paddle.mean(x, axis=1, keepdim=True)  # [1, 1, 160, 160]
         x = self.spatial_wise_1(inputs)   # [1, 1, 160, 160]       
         x = self.ReLU(x)
